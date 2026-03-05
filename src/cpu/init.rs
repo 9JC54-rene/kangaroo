@@ -124,7 +124,9 @@ pub fn initialize_kangaroos(
         1u128 << range_bits
     };
 
-    let range_middle = if range_bits >= 128 {
+    let range_middle = if range_bits == 0 {
+        0
+    } else if range_bits >= 128 {
         u128::MAX / 2
     } else {
         1u128 << (range_bits - 1)
