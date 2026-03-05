@@ -31,7 +31,6 @@ use indicatif::ProgressBar;
 use k256::elliptic_curve::ops::Reduce;
 use k256::U256 as K256U256;
 use k256::{ProjectivePoint, Scalar};
-#[cfg(feature = "boha")]
 use num_bigint::BigUint;
 use serde::Serialize;
 use std::time::Instant;
