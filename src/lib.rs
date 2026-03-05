@@ -201,8 +201,10 @@ fn resolve_params(args: &Args) -> anyhow::Result<ResolvedParams> {
     let explicit_window = match &args.range_window {
         Some(window) => {
             let (start_str, start_val, end_val) = parse_hex_bounds(window)?;
-            let range_span = &end_val - &start_val;
-            let range_bits = ceil_log2_biguint(&range_span);
+            // Window is inclusive: [start, end].
+            // Convert to width before deriving bits so a 2-value window maps to 1 bit.
+            let range_width = (&end_val - &start_val) + BigUint::from(1u8);
+            let range_bits = ceil_log2_biguint(&range_width);
             Some((start_str, range_bits))
         }
         None => None,
