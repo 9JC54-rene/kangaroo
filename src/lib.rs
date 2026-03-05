@@ -31,7 +31,6 @@ use indicatif::ProgressBar;
 use k256::elliptic_curve::ops::Reduce;
 use k256::U256 as K256U256;
 use k256::{ProjectivePoint, Scalar};
-#[cfg(feature = "boha")]
 use num_bigint::BigUint;
 use serde::Serialize;
 use std::time::Instant;
@@ -54,6 +53,10 @@ pub struct Args {
     /// Bit range to search (key is in [start, start + 2^range])
     #[arg(short, long)]
     range: Option<u32>,
+
+    /// Explicit hex bounds as start-end (without 0x), e.g. a480000000-d300000000
+    #[arg(long)]
+    range_window: Option<String>,
 
     /// Data provider target (e.g., boha:b1000/135)
     #[arg(short, long)]
@@ -149,7 +152,68 @@ struct ResolvedParams {
     range_bits: u32,
 }
 
+fn parse_hex_bounds(range_window: &str) -> anyhow::Result<(String, BigUint, BigUint)> {
+    let compact = range_window.trim().replace(' ', "");
+    let (raw_start, raw_end) = compact
+        .split_once('-')
+        .ok_or_else(|| anyhow!("Invalid --range-window format. Use <start>-<end>"))?;
+
+    let start = raw_start.trim_start_matches("0x");
+    let end = raw_end.trim_start_matches("0x");
+
+    if start.is_empty() || end.is_empty() {
+        return Err(anyhow!(
+            "Invalid --range-window format. Start and end must be non-empty hex values"
+        ));
+    }
+
+    let start_val = BigUint::parse_bytes(start.as_bytes(), 16)
+        .ok_or_else(|| anyhow!("Invalid start hex in --range-window: {}", raw_start))?;
+    let end_val = BigUint::parse_bytes(end.as_bytes(), 16)
+        .ok_or_else(|| anyhow!("Invalid end hex in --range-window: {}", raw_end))?;
+
+    if end_val < start_val {
+        return Err(anyhow!(
+            "Invalid --range-window: end must be >= start (got 0x{}-0x{})",
+            start,
+            end
+        ));
+    }
+
+    Ok((start.to_string(), start_val, end_val))
+}
+
+fn ceil_log2_biguint(n: &BigUint) -> u32 {
+    if n == &BigUint::from(0u8) {
+        return 0;
+    }
+    let bits = n.bits() as u32;
+    let one_less = n - BigUint::from(1u8);
+    let is_pow2 = (&one_less & n) == BigUint::from(0u8);
+    if is_pow2 {
+        bits.saturating_sub(1)
+    } else {
+        bits
+    }
+}
+
 fn resolve_params(args: &Args) -> anyhow::Result<ResolvedParams> {
+    let explicit_window = match &args.range_window {
+        Some(window) => {
+            let (start_str, start_val, end_val) = parse_hex_bounds(window)?;
+            let range_span = &end_val - &start_val;
+            let range_bits = ceil_log2_biguint(&range_span);
+            Some((start_str, range_bits))
+        }
+        None => None,
+    };
+
+    if explicit_window.is_some() && (args.start.is_some() || args.range.is_some()) {
+        return Err(anyhow!(
+            "--range-window cannot be combined with --start or --range"
+        ));
+    }
+
     let provider_result = if let Some(ref target) = args.target {
         provider::resolve(target)?
     } else {
@@ -169,21 +233,31 @@ fn resolve_params(args: &Args) -> anyhow::Result<ResolvedParams> {
                 }
             };
 
-            let start_str = args
-                .start
-                .clone()
-                .or_else(|| pr.start.clone())
-                .unwrap_or_else(|| "0".to_string());
-
-            let range_bits = match args.range {
-                Some(user_range) => {
-                    // User provided explicit range - validate it
-                    validate_search_bounds(&start_str, user_range, pr)?;
-                    user_range
+            let (start_str, range_bits) = match explicit_window {
+                Some((ref start_str, range_bits)) => {
+                    validate_search_bounds(start_str, range_bits, pr)?;
+                    (start_str.clone(), range_bits)
                 }
                 None => {
-                    // No user range - calculate from provider bounds if available
-                    calculate_range_bits_from_provider(&start_str, pr)?
+                    let start_str = args
+                        .start
+                        .clone()
+                        .or_else(|| pr.start.clone())
+                        .unwrap_or_else(|| "0".to_string());
+
+                    let range_bits = match args.range {
+                        Some(user_range) => {
+                            // User provided explicit range - validate it
+                            validate_search_bounds(&start_str, user_range, pr)?;
+                            user_range
+                        }
+                        None => {
+                            // No user range - calculate from provider bounds if available
+                            calculate_range_bits_from_provider(&start_str, pr)?
+                        }
+                    };
+
+                    (start_str, range_bits)
                 }
             };
 
@@ -194,8 +268,13 @@ fn resolve_params(args: &Args) -> anyhow::Result<ResolvedParams> {
                 .pubkey
                 .clone()
                 .ok_or_else(|| anyhow!("--pubkey is required when not using --target"))?;
-            let start_str = args.start.clone().unwrap_or_else(|| "0".to_string());
-            let range_bits = args.range.unwrap_or(32);
+            let (start_str, range_bits) = match explicit_window {
+                Some((start_str, range_bits)) => (start_str, range_bits),
+                None => (
+                    args.start.clone().unwrap_or_else(|| "0".to_string()),
+                    args.range.unwrap_or(32),
+                ),
+            };
             (pubkey_str, start_str, range_bits)
         }
     };
@@ -751,5 +830,36 @@ mod cli_tests {
 
         assert_eq!(args.mod_step, "7", "mod_step should be '7'");
         assert_eq!(args.mod_start, "3", "mod_start should be '3'");
+    }
+
+    #[test]
+    fn test_cli_range_window_parse() {
+        let args = Args::try_parse_from([
+            "kangaroo",
+            "--pubkey",
+            "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4",
+            "--range-window",
+            "a480000000-d300000000",
+        ])
+        .expect("Failed to parse args");
+
+        assert_eq!(args.range_window.as_deref(), Some("a480000000-d300000000"));
+    }
+
+    #[test]
+    fn test_parse_hex_bounds_and_bits() {
+        let (start, start_val, end_val) =
+            parse_hex_bounds("a480000000-d300000000").expect("window parse failed");
+        let span = end_val - start_val;
+        let bits = ceil_log2_biguint(&span);
+
+        assert_eq!(start, "a480000000");
+        assert_eq!(bits, 31);
+    }
+
+    #[test]
+    fn test_parse_hex_bounds_rejects_descending_window() {
+        let result = parse_hex_bounds("d300000000-a480000000");
+        assert!(result.is_err());
     }
 }

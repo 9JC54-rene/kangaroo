@@ -39,11 +39,11 @@ futures = "0.3"
 
 # Data providers (optional)
 boha = { version = "0.15", optional = true }
-num-bigint = { version = "0.4", optional = true }
+num-bigint = "0.4"
 
 [features]
 default = []
-boha = ["dep:boha", "dep:num-bigint"]
+boha = ["dep:boha"]
 
 [dev-dependencies]
 tempfile = "3.25"
