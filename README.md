@@ -69,6 +69,7 @@ kangaroo --pubkey <PUBKEY> --start <START> --range <BITS>
 | `-p, --pubkey` | - | Target public key (compressed hex, 33 bytes) |
 | `-s, --start` | 0 | Start of search range (hex, without 0x prefix) |
 | `-r, --range` | 32 | Search range in bits (key is in [start, start + 2^range]) |
+| `--range-window` | - | Explicit bounds in hex: `<start>-<end>` (cannot be combined with `--start/--range`) |
 | `-d, --dp-bits` | auto | Distinguished point bits |
 | `-k, --kangaroos` | auto | Number of parallel kangaroos |
 | `--gpu` | 0 | GPU device index |
@@ -94,6 +95,9 @@ kangaroo --target boha:b1000/66
 # Override range (search smaller subset)
 kangaroo --target boha:b1000/66 --range 60
 
+# Solve an explicit interval in hex
+kangaroo --target boha:b1000/66 --range-window a480000000-d300000000
+
 # List available puzzles
 kangaroo --list-providers
 ```
@@ -105,7 +109,14 @@ kangaroo \
     --pubkey 03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4 \
     --start 8000000000 \
     --range 40
+
+# Equivalent explicit interval form (inclusive bounds)
+kangaroo \
+    --pubkey 03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4 \
+    --range-window a480000000-d300000000
 ```
+
+`--range-window` is interpreted as an inclusive interval `[start, end]`. Internally, the solver uses the smallest `2^bits` window that covers that interval.
 
 ## How It Works
 
